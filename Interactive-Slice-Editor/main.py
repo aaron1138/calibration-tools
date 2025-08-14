@@ -4,6 +4,7 @@ import tempfile
 import cv2
 import numpy as np
 import copy
+import re
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QLabel, QWidget,
@@ -102,6 +103,7 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._setup_menus()
         self._connect_tool_signals()
+        self.update_ui_for_project_state()
 
     def _setup_ui(self):
         main_widget = QWidget()
@@ -140,9 +142,18 @@ class MainWindow(QMainWindow):
         file_menu = menu_bar.addMenu("&File")
         edit_menu = menu_bar.addMenu("&Edit")
 
-        open_action = QAction("&Open Slice File...", self)
-        open_action.triggered.connect(self.open_file)
-        file_menu.addAction(open_action)
+        open_slice_action = QAction("&Open Slice File...", self)
+        open_slice_action.triggered.connect(self.open_slice_file)
+        file_menu.addAction(open_slice_action)
+
+        open_single_png_action = QAction("Open Single &PNG...", self)
+        open_single_png_action.triggered.connect(self.open_single_png)
+        file_menu.addAction(open_single_png_action)
+
+        open_png_seq_action = QAction("Open PNG &Sequence...", self)
+        open_png_seq_action.triggered.connect(self.open_png_sequence)
+        file_menu.addAction(open_png_seq_action)
+
         file_menu.addSeparator()
         exit_action = QAction("E&xit", self)
         exit_action.triggered.connect(self.close)
@@ -150,30 +161,39 @@ class MainWindow(QMainWindow):
 
         self.undo_action = QAction("&Undo", self)
         self.undo_action.triggered.connect(self.undo)
-        self.undo_action.setEnabled(False)
         edit_menu.addAction(self.undo_action)
 
         self.redo_action = QAction("&Redo", self)
         self.redo_action.triggered.connect(self.redo)
-        self.redo_action.setEnabled(False)
         edit_menu.addAction(self.redo_action)
 
         edit_menu.addSeparator()
 
         self.copy_action = QAction("&Copy Last Action", self)
         self.copy_action.triggered.connect(self.copy_last_action)
-        self.copy_action.setEnabled(False)
         edit_menu.addAction(self.copy_action)
 
         self.paste_action = QAction("&Paste to Current Layer", self)
         self.paste_action.triggered.connect(self.paste_to_current_layer)
-        self.paste_action.setEnabled(False)
         edit_menu.addAction(self.paste_action)
 
         self.paste_n_action = QAction("Paste to &N Layers...", self)
         self.paste_n_action.triggered.connect(self.paste_to_n_layers)
-        self.paste_n_action.setEnabled(False)
         edit_menu.addAction(self.paste_n_action)
+
+        edit_menu.addSeparator()
+
+        self.add_layer_action = QAction("&Add New Blank Layer", self)
+        self.add_layer_action.triggered.connect(self.add_new_layer)
+        edit_menu.addAction(self.add_layer_action)
+
+        self.copy_layer_action = QAction("C&opy Current Layer", self)
+        self.copy_layer_action.triggered.connect(self.copy_current_layer)
+        edit_menu.addAction(self.copy_layer_action)
+
+        self.delete_layer_action = QAction("&Delete Current Layer", self)
+        self.delete_layer_action.triggered.connect(self.delete_current_layer)
+        edit_menu.addAction(self.delete_layer_action)
 
     def _connect_tool_signals(self):
         self.rect_tool_widget.draw_button.toggled.connect(self.toggle_draw_mode)
@@ -234,7 +254,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Added text.")
         self.text_tool_widget.place_button.setChecked(False)
 
-    def open_file(self):
+    def open_slice_file(self):
         uvtools_path = "C:\\Program Files\\UVTools\\UVToolsCmd.exe"
         if not os.path.exists(uvtools_path):
             QMessageBox.critical(self, "UVTools Not Found", f"Could not find UVToolsCmd.exe at:\n{uvtools_path}")
@@ -247,13 +267,35 @@ class MainWindow(QMainWindow):
             extracted_folder = uvtools_wrapper.extract_layers(uvtools_path, file_path, self.temp_dir.name)
             image_files = sorted([os.path.join(extracted_folder, f) for f in os.listdir(extracted_folder) if f.lower().endswith('.png')])
             if not image_files: raise RuntimeError("No PNG images were extracted.")
-            self.project = Project(source_file_path=file_path, layer_image_paths=image_files)
-            self.layer_slider.setRange(0, self.project.total_layers - 1)
-            self.load_layer(0)
-            self.statusBar().showMessage(f"Loaded {self.project.total_layers} layers.")
+            self.load_new_project(image_files, file_path)
         except Exception as e:
             self.statusBar().showMessage(f"Error: {e}")
             QMessageBox.critical(self, "Error Loading File", f"An error occurred:\n{e}")
+
+    def open_single_png(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Open Single PNG", filter="PNG Files (*.png)")
+        if not file_path: return
+        self.load_new_project([file_path], file_path)
+
+    def open_png_sequence(self):
+        dir_path = QFileDialog.getExistingDirectory(self, "Select Folder with PNG Sequence")
+        if not dir_path: return
+        try:
+            image_files = sorted(
+                [os.path.join(dir_path, f) for f in os.listdir(dir_path) if f.lower().endswith('.png')],
+                key=lambda f: int(re.search(r'(\d+)', f).group(1)) if re.search(r'(\d+)', f) else -1
+            )
+            if not image_files: raise RuntimeError("No PNG images found in the selected directory.")
+            self.load_new_project(image_files, dir_path)
+        except Exception as e:
+            self.statusBar().showMessage(f"Error: {e}")
+            QMessageBox.critical(self, "Error Loading Sequence", f"An error occurred:\n{e}")
+
+    def load_new_project(self, image_paths: list, source_path: str):
+        self.project = Project(source_file_path=source_path, layer_image_paths=image_paths)
+        self.update_ui_for_project_state()
+        self.load_layer(0)
+        self.statusBar().showMessage(f"Loaded {self.project.total_layers} layers from {os.path.basename(source_path)}.")
 
     def slider_moved(self, value):
         self.load_layer(value)
@@ -270,47 +312,54 @@ class MainWindow(QMainWindow):
 
     def load_layer(self, layer_index):
         if not self.project.layer_image_paths or not (0 <= layer_index < self.project.total_layers): return
+
         base_image_path = self.project.layer_image_paths[layer_index]
-        image_np = cv2.imread(base_image_path, cv2.IMREAD_GRAYSCALE).copy()
+        if base_image_path is not None:
+            image_np = cv2.imread(base_image_path, cv2.IMREAD_GRAYSCALE)
+        else:
+            image_np = None
+
+        if image_np is None:
+            dims = self.project.get_project_dimensions()
+            image_np = np.zeros(dims, dtype=np.uint8)
+
+        image_np = image_np.copy()
         if layer_index in self.project.edits:
             for command in self.project.edits[layer_index]:
                 image_np = command.apply(image_np)
         self.image_canvas.set_image(image_np)
         self.layer_slider.setValue(layer_index)
         self.layer_input.setText(str(layer_index))
-        self.update_undo_redo_status()
+        self.update_ui_for_project_state()
 
     def undo(self):
         command = self.project.perform_undo()
         if command:
             self.statusBar().showMessage(f"Undid action on layer {command.get_affected_layer()}")
             self.load_layer(self.layer_slider.value())
-        self.update_undo_redo_status()
+        self.update_ui_for_project_state()
 
     def redo(self):
         command = self.project.perform_redo()
         if command:
             self.statusBar().showMessage(f"Redid action on layer {command.get_affected_layer()}")
             self.load_layer(self.layer_slider.value())
-        self.update_undo_redo_status()
+        self.update_ui_for_project_state()
 
     def copy_last_action(self):
         if not self.project.undo_stack:
             self.statusBar().showMessage("No action to copy.")
             return
-        # Deepcopy ensures that we don't just have a reference
         self.clipboard = copy.deepcopy(self.project.undo_stack[-1])
         self.statusBar().showMessage("Copied last action to clipboard.")
-        self.update_undo_redo_status()
+        self.update_ui_for_project_state()
 
     def paste_to_current_layer(self):
         if not self.clipboard:
             self.statusBar().showMessage("Clipboard is empty.")
             return
-
         new_command = copy.deepcopy(self.clipboard)
         new_command.layer_index = self.layer_slider.value()
-
         self.project.add_edit(new_command)
         self.load_layer(self.layer_slider.value())
         self.statusBar().showMessage(f"Pasted action to layer {new_command.layer_index}.")
@@ -319,28 +368,60 @@ class MainWindow(QMainWindow):
         if not self.clipboard:
             self.statusBar().showMessage("Clipboard is empty.")
             return
-
         num, ok = QInputDialog.getInt(self, "Paste to N Layers", "Number of subsequent layers to paste to:", 1, 1, 1000)
-
         if ok and num > 0:
             start_layer = self.layer_slider.value()
-            # Ensure we don't go past the end of the project
             end_layer = min(start_layer + num, self.project.total_layers - 1)
-
             for i in range(start_layer, end_layer + 1):
                 new_command = copy.deepcopy(self.clipboard)
                 new_command.layer_index = i
                 self.project.add_edit(new_command)
-
-            self.load_layer(self.layer_slider.value()) # Reload current layer to show change if it was the start
+            self.load_layer(self.layer_slider.value())
             self.statusBar().showMessage(f"Pasted action to layers {start_layer} through {end_layer}.")
 
-    def update_undo_redo_status(self):
+    def add_new_layer(self):
+        if not self.project.layer_image_paths: return
+        current_index = self.layer_slider.value()
+        self.project.add_blank_layer(current_index + 1)
+        self.update_ui_for_project_state()
+        self.load_layer(current_index + 1)
+        self.statusBar().showMessage(f"Added new blank layer at {current_index + 1}.")
+
+    def copy_current_layer(self):
+        if not self.project.layer_image_paths: return
+        current_index = self.layer_slider.value()
+        self.project.copy_layer(current_index)
+        self.update_ui_for_project_state()
+        self.load_layer(current_index + 1)
+        self.statusBar().showMessage(f"Copied layer {current_index} to {current_index + 1}.")
+
+    def delete_current_layer(self):
+        if not self.project.layer_image_paths: return
+        if self.project.total_layers <= 1:
+            self.statusBar().showMessage("Cannot delete the last layer.")
+            return
+
+        current_index = self.layer_slider.value()
+        self.project.delete_layer(current_index)
+
+        # After deleting, load the new layer at the same index (or the last one if it was the last)
+        new_index = min(current_index, self.project.total_layers - 1)
+        self.update_ui_for_project_state()
+        self.load_layer(new_index)
+        self.statusBar().showMessage(f"Deleted layer {current_index}.")
+
+    def update_ui_for_project_state(self):
+        has_project = self.project.total_layers > 0
+        self.layer_slider.setRange(0, self.project.total_layers - 1)
+
         self.undo_action.setEnabled(bool(self.project.undo_stack))
         self.redo_action.setEnabled(bool(self.project.redo_stack))
         self.copy_action.setEnabled(bool(self.project.undo_stack))
-        self.paste_action.setEnabled(self.clipboard is not None)
-        self.paste_n_action.setEnabled(self.clipboard is not None)
+        self.paste_action.setEnabled(self.clipboard is not None and has_project)
+        self.paste_n_action.setEnabled(self.clipboard is not None and has_project)
+        self.add_layer_action.setEnabled(has_project)
+        self.copy_layer_action.setEnabled(has_project)
+        self.delete_layer_action.setEnabled(has_project and self.project.total_layers > 1)
 
     def closeEvent(self, event):
         self.temp_dir.cleanup()

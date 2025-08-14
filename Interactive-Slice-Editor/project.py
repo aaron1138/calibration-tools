@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 import numpy as np
 import cv2
+import copy
 
 class EditCommand:
     """Base class for a non-destructive edit."""
@@ -85,6 +86,59 @@ class Project:
 
         self.undo_stack.append(command)
         return command
+
+    def _shift_edits(self, from_index: int, by_amount: int):
+        """Shifts all edit keys greater than or equal to from_index by a given amount."""
+        keys = sorted(self.edits.keys(), reverse=(by_amount > 0))
+        for key in keys:
+            if key >= from_index:
+                self.edits[key + by_amount] = self.edits.pop(key)
+                # Update the layer_index within each command
+                for command in self.edits[key + by_amount]:
+                    command.layer_index += by_amount
+
+    def add_blank_layer(self, at_index: int):
+        """Adds a new blank layer at the given index."""
+        blank_layer_path = None
+        if at_index > len(self.layer_image_paths):
+            self.layer_image_paths.append(blank_layer_path)
+        else:
+            self._shift_edits(from_index=at_index, by_amount=1)
+            self.layer_image_paths.insert(at_index, blank_layer_path)
+
+    def copy_layer(self, from_index: int):
+        """Copies the layer at from_index and inserts it after."""
+        if not (0 <= from_index < len(self.layer_image_paths)):
+            return
+
+        insert_index = from_index + 1
+        self._shift_edits(from_index=insert_index, by_amount=1)
+
+        self.layer_image_paths.insert(insert_index, self.layer_image_paths[from_index])
+        if from_index in self.edits:
+            self.edits[insert_index] = copy.deepcopy(self.edits[from_index])
+            for command in self.edits[insert_index]:
+                command.layer_index = insert_index
+
+    def delete_layer(self, at_index: int):
+        """Deletes the layer at the given index."""
+        if not (0 <= at_index < len(self.layer_image_paths)):
+            return
+
+        self.layer_image_paths.pop(at_index)
+        if at_index in self.edits:
+            self.edits.pop(at_index)
+        self._shift_edits(from_index=at_index + 1, by_amount=-1)
+
+    def get_project_dimensions(self) -> tuple[int, int]:
+        """Finds the dimensions of the project by reading the first available image."""
+        for path in self.layer_image_paths:
+            if path is not None:
+                img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+                if img is not None:
+                    return img.shape # (height, width)
+        # Fallback if no valid image is found
+        return (1000, 1000)
 
 @dataclass
 class DrawRectangleCommand(EditCommand):
